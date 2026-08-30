@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: "test (${{ matrix.os }})"
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: "Install stable toolchain"
+        uses: dtolnay/rust-toolchain@stable
+      - name: "Run tests"
+        run: cargo test --all-targets --verbose
+
+  lint:
+    name: "fmt + clippy"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: "Install stable toolchain"
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: "Check formatting"
+        run: cargo fmt --all -- --check
+      - name: "Run clippy"
+        run: cargo clippy --all-targets -- -D warnings
+
+  msrv:
+    name: "MSRV (1.74.0)"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: "Install MSRV toolchain"
+        uses: dtolnay/rust-toolchain@1.74.0
+      - name: "Build with MSRV"
+        run: cargo build --all-targets
+      - name: "Test with MSRV"
+        run: cargo test --all-targets
+
+  smoke:
+    name: "release smoke test"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: "Install stable toolchain"
+        uses: dtolnay/rust-toolchain@stable
+      - name: "Build release binary"
+        run: cargo build --release
+      - name: "Audit a known-bad Dockerfile, expect nonzero exit"
+        run: |
+          set +e
+          ./target/release/confaudit testdata/docker/Dockerfile.bad
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "expected a nonzero exit code auditing a known-bad Dockerfile"
+            exit 1
+          fi
+          echo "confaudit correctly reported findings (exit $status)"
+      - name: "Audit a known-good sshd_config at high severity, expect zero exit"
+        run: ./target/release/confaudit --severity high testdata/sshd/good_sshd_config

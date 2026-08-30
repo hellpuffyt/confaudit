@@ -1,0 +1,15 @@
+# Intentionally insecure Dockerfile used as a fixture for confaudit's
+# tests and CI smoke checks. Do not deploy this file.
+FROM node:latest
+
+ARG API_TOKEN=fake-build-time-token-do-not-use
+ENV DB_PASSWORD=fake-plaintext-password-do-not-use
+
+WORKDIR /app
+COPY . .
+RUN apt-get update && apt-get install -y curl sudo
+RUN curl -fsSL https://example.com/install.sh | sh
+RUN npm install
+
+EXPOSE 3000
+CMD ["node", "server.js"]

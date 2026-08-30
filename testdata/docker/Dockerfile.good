@@ -1,0 +1,20 @@
+# A hardened Dockerfile used as a fixture for confaudit's tests and CI
+# smoke checks.
+FROM node:20.11.1-slim
+
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm ci --omit=dev
+
+COPY . .
+
+RUN useradd --create-home --shell /usr/sbin/nologin app
+USER app
+
+HEALTHCHECK --interval=30s --timeout=3s CMD curl -f http://localhost:3000/health || exit 1
+
+EXPOSE 3000
+CMD ["node", "server.js"]
