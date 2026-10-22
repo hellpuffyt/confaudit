@@ -163,15 +163,23 @@ fn mk(
 /// Parse and audit `content`, returning every rule violation found.
 ///
 /// # Errors
-/// Returns an error if `content` cannot be parsed (see [`parse`]).
+/// Returns an error if `content` cannot be parsed (unterminated line
+/// continuation, see the module docs).
 #[allow(clippy::too_many_lines)]
 pub fn audit(file: &str, content: &str) -> Result<Vec<Finding>, String> {
     let instructions = parse(content)?;
     let mut findings = Vec::new();
 
-    // DOCK001: no USER directive, or last USER is root.
+    // DOCK001: no USER directive, or last USER is root - in the *final*
+    // stage. Each FROM starts a new stage that resets the user to the base
+    // image's default, so a USER in an earlier (builder) stage does not
+    // apply to the image that ships.
+    let final_stage_start = instructions
+        .iter()
+        .rposition(|i| i.keyword == "FROM")
+        .unwrap_or(0);
     let mut last_user: Option<&Instruction> = None;
-    for ins in &instructions {
+    for ins in &instructions[final_stage_start..] {
         if ins.keyword == "USER" {
             last_user = Some(ins);
         }
@@ -215,15 +223,26 @@ pub fn audit(file: &str, content: &str) -> Result<Vec<Finding>, String> {
         ));
     }
 
+    // Stage names from `FROM image AS name`; a later `FROM name` refers to
+    // that stage, not to an untagged registry image.
+    let mut stage_names: Vec<String> = Vec::new();
     let mut first_dependency_install: Option<usize> = None;
     let mut copy_all_line: Option<usize> = None;
 
     for ins in &instructions {
         match ins.keyword.as_str() {
             "FROM" => {
-                let image = ins.args.split_whitespace().next().unwrap_or("");
+                // Skip flags such as `--platform=linux/amd64`.
+                let mut words = ins.args.split_whitespace().filter(|w| !w.starts_with("--"));
+                let image = words.next().unwrap_or("");
                 let image_no_platform = image;
-                if !image_no_platform.contains("scratch") {
+                let refers_to_stage = stage_names.iter().any(|n| n.eq_ignore_ascii_case(image));
+                if let (Some(as_kw), Some(name)) = (words.next(), words.next()) {
+                    if as_kw.eq_ignore_ascii_case("as") {
+                        stage_names.push(name.to_string());
+                    }
+                }
+                if !image_no_platform.eq_ignore_ascii_case("scratch") && !refers_to_stage {
                     let tag_part = image_no_platform
                         .rsplit('/')
                         .next()
@@ -658,5 +677,28 @@ mod tests {
         let cfg = "FROM debian:12\nENV FOO=bar BAR=baz\nUSER app\n";
         let f = audit("Dockerfile", cfg).unwrap();
         assert!(!has(&f, "DOCK004"));
+    }
+
+    #[test]
+    fn user_in_a_builder_stage_does_not_cover_the_final_stage() {
+        // Regression (false negative): the last USER anywhere in the file
+        // was used, but the final stage starts again as root.
+        let cfg =
+            "FROM rust:1.80 AS build\nUSER app\nFROM debian:12\nCOPY --from=build /app /app\n";
+        assert!(has(&audit("Dockerfile", cfg).unwrap(), "DOCK001"));
+        let cfg = "FROM rust:1.80 AS build\nFROM debian:12\nUSER app\n";
+        assert!(!has(&audit("Dockerfile", cfg).unwrap(), "DOCK001"));
+    }
+
+    #[test]
+    fn stage_references_and_platform_flags_are_not_untagged_images() {
+        // Regression (false positives): `FROM build` named an earlier stage,
+        // and `--platform=...` was taken for the image name.
+        let cfg = "FROM --platform=linux/amd64 rust:1.80 AS build\nFROM build AS test\nFROM debian:12\nUSER app\n";
+        assert!(!has(&audit("Dockerfile", cfg).unwrap(), "DOCK002"));
+        let cfg = "FROM --platform=linux/amd64 debian\nUSER app\n";
+        assert!(has(&audit("Dockerfile", cfg).unwrap(), "DOCK002"));
+        let cfg = "FROM myscratchimage\nUSER app\n";
+        assert!(has(&audit("Dockerfile", cfg).unwrap(), "DOCK002"));
     }
 }

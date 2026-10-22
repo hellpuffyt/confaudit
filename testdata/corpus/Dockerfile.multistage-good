@@ -1,0 +1,18 @@
+# Multi-stage build that is fine: pinned images, stage references, and a
+# non-root user in the final stage.
+FROM --platform=linux/amd64 rust:1.80 AS build
+WORKDIR /src
+COPY Cargo.toml Cargo.lock ./
+RUN cargo fetch
+COPY . .
+RUN cargo build --release
+
+FROM build AS test
+RUN cargo test --release
+
+FROM debian:12.5-slim
+COPY --from=build /src/target/release/app /usr/local/bin/app
+RUN useradd -m app
+USER app
+HEALTHCHECK CMD ["/usr/local/bin/app", "--health"]
+ENTRYPOINT ["/usr/local/bin/app"]

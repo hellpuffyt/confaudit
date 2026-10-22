@@ -119,3 +119,54 @@ fn missing_file_argument_shows_usage_error() {
     let out = bin().output().expect("run confaudit");
     assert!(!out.status.success());
 }
+
+/// Rule IDs reported for a fixture, as a sorted set.
+fn rule_ids(path: &str) -> Vec<String> {
+    let out = bin()
+        .args(["--format", "json", "--no-fail", path])
+        .output()
+        .expect("run confaudit");
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    let mut ids: Vec<String> = v["findings"]
+        .as_array()
+        .expect("findings")
+        .iter()
+        .map(|f| f["rule_id"].as_str().expect("rule_id").to_string())
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+#[test]
+fn corpus_of_known_false_positives_and_negatives() {
+    // Each fixture reproduces a defect found in the production-readiness
+    // audit; the comment is what the previous release reported instead.
+    let cases: &[(&str, &[&str])] = &[
+        // was []: add_header inheritance and the off-by-slash alias missed
+        (
+            "testdata/corpus/inheritance_trap.conf",
+            &["NGX006", "NGX007", "NGX012"],
+        ),
+        // was [DOCK002]: `FROM build` and `--platform=` taken for untagged images
+        ("testdata/corpus/Dockerfile.multistage-good", &[]),
+        // was []: USER in the build stage counted for the final image
+        ("testdata/corpus/Dockerfile.multistage-root", &["DOCK001"]),
+        // was [SSHD001 (as unset, medium), SSHD006, SSHD007]
+        ("testdata/corpus/equals_sshd_config", &["SSHD001"]),
+    ];
+    for (path, expected) in cases {
+        assert_eq!(rule_ids(path), *expected, "{path}");
+    }
+}
+
+#[test]
+fn good_fixtures_are_clean_at_every_severity() {
+    for path in [
+        "testdata/nginx/good.conf",
+        "testdata/docker/Dockerfile.good",
+        "testdata/corpus/Dockerfile.multistage-good",
+    ] {
+        assert_eq!(rule_ids(path), Vec::<String>::new(), "{path}");
+    }
+}
