@@ -33,10 +33,14 @@ sends, that's a different (and complementary) kind of tool.
 - Three real, hand-written parsers — not one big regex sweep:
   - `sshd_config`, with correct `Match`-block scoping (a directive inside
     a `Match` block is conditional and is never reported as a global
-    setting).
+    setting), first-value-wins semantics, and both `Keyword value` and
+    `Keyword=value` syntax.
   - nginx, with a full block tree and directive **inheritance**
-    (`http` -> `server` -> `location`), so a header set once at `http`
-    level is correctly recognized on every `server` beneath it.
+    (`http` -> `server` -> `location`) modelled the way nginx does it: a
+    header set once at `http` level is recognized on every `server`
+    beneath it — *unless* that `server` (or a `location`) has any
+    `add_header` of its own, in which case nginx inherits none of them and
+    confaudit reports the headers that are dropped.
   - `Dockerfile`, with backslash line-continuation joining and comment
     handling.
 - 36 rules across the three formats (see the reference table below).
@@ -150,13 +154,13 @@ Exit codes: `0` no findings at/above threshold, `1` findings reported,
 | NGX009 | Medium | `client_max_body_size 0` | Unbounded upload size enables resource-exhaustion DoS |
 | NGX010 | Medium | `proxy_pass` without `proxy_set_header Host` (inheritance-aware) | Breaks host-based routing / backend vhost checks |
 | NGX011 | Medium | Non-`return`/`rewrite`/`break`/`set` directive inside `if` | nginx's `if` misbehaves outside that narrow set |
-| NGX012 | High | `alias` without a trailing slash matching the `location` | Classic path-traversal footgun |
+| NGX012 | High | `location` prefix without a trailing slash whose `alias` has one (`location /static { alias /var/www/static/; }`) | `/static../x` maps to `/var/www/static/../x`: path traversal ("off-by-slash") |
 
 ### Dockerfile
 
 | Rule ID | Severity | Trigger | Consequence |
 | ------- | -------- | ------- | ----------- |
-| DOCK001 | High | No `USER`, or `USER root`/`0` | Compromise runs as container root |
+| DOCK001 | High | No `USER` in the final build stage, or `USER root`/`0` | Compromise runs as container root |
 | DOCK002 | Medium | `latest` tag or no tag | Build is not reproducible; base can silently change |
 | DOCK003 | Medium | `ADD` from `http(s)://` | No integrity check on the fetched content |
 | DOCK004 | Critical | Secret-shaped key in `ENV`/`ARG` with a value | Baked permanently into image layer history |
@@ -171,12 +175,12 @@ Exit codes: `0` no findings at/above threshold, `1` findings reported,
 
 ```
 $ confaudit testdata/sshd/bad_sshd_config
-[critical] SSHD001 (sshd) - testdata/sshd/bad_sshd_config:2
+[critical] SSHD001 (sshd) - testdata/sshd/bad_sshd_config:4
   found:      PermitRootLogin yes
   consequence: An attacker who obtains or brute-forces any valid credential (password or key) can log in directly as root, skipping privilege escalation entirely.
   fix:        Set 'PermitRootLogin no' and use sudo with a named account for administrative access.
 ...
-Summary: 13 finding(s) - critical=2 high=6 medium=1 low=3 info=1
+Summary: 13 finding(s) - critical=3 high=4 medium=2 low=3 info=1
 ```
 
 ```
@@ -199,7 +203,12 @@ trigger), plus:
 - an sshd directive inside a `Match` block is never reported as a global
   setting;
 - an nginx header inherited from `http` is never reported missing on a
-  child `server`;
+  child `server`, and a local `add_header` that discards inherited ones is
+  reported;
+- `testdata/corpus/` holds realistic false-positive / false-negative cases
+  (nginx inheritance trap, multi-stage Dockerfiles, `Keyword=value` and
+  `-algorithm` sshd syntax), each pinned to its exact rule-ID set by
+  `tests/cli.rs`;
 - line-number accuracy across flat, nested, and continuation-joined
   input;
 - malformed input (unterminated quotes/strings, unbalanced braces,
@@ -208,7 +217,18 @@ trigger), plus:
 - CLI-level tests against the fixtures in `testdata/` covering exit
   codes, `--ignore`, `--no-fail`, and all three output formats.
 
+## Limitations
+
+- `Include` (sshd and nginx) is not followed; only the named file is audited.
+- sshd defaults are mostly not inferred: an unset `PasswordAuthentication`
+  (OpenSSH default `yes`) is not reported; an unset `PermitRootLogin` is.
+- nginx `map`/variables and `if` semantics are not evaluated; header
+  coverage is judged per `server` and its top-level `location` blocks.
+- Dockerfile `ARG`-substituted image names and users are not expanded.
+
 ## Security
+
+Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
 
 `confaudit` only reads files you point it at; it makes no network
 requests and executes nothing from the files it audits. The fixtures in
