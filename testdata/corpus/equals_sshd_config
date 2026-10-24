@@ -1,0 +1,7 @@
+# sshd accepts "Keyword=value"; removing weak algorithms with '-' is good.
+PermitRootLogin=yes
+PasswordAuthentication = no
+Ciphers -3des-cbc,aes128-cbc
+MACs -hmac-md5
+MaxAuthTries 3
+ClientAliveInterval 300

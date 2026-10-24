@@ -1,0 +1,12 @@
+# The only USER is in the build stage; the shipped final stage runs as root.
+FROM golang:1.22 AS build
+RUN useradd -m builder
+USER builder
+WORKDIR /src
+COPY . .
+RUN go build -o /tmp/app .
+
+FROM debian:12.5-slim
+COPY --from=build /tmp/app /usr/local/bin/app
+HEALTHCHECK CMD ["/usr/local/bin/app", "--health"]
+ENTRYPOINT ["/usr/local/bin/app"]

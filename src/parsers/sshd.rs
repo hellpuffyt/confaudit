@@ -39,10 +39,16 @@ fn parse(content: &str) -> Result<Vec<Directive>, String> {
             return Err(format!("line {line_no}: unterminated quoted string"));
         }
 
-        let mut parts = trimmed.splitn(2, char::is_whitespace);
-        let keyword_raw = parts.next().unwrap_or_default();
+        // sshd_config(5): "Keyword arguments" or "Keyword=arguments" (the
+        // '=' optionally surrounded by whitespace). Splitting on whitespace
+        // only turned `PermitRootLogin=yes` into an unknown keyword.
+        let split_at = trimmed
+            .find(|c: char| c.is_whitespace() || c == '=')
+            .unwrap_or(trimmed.len());
+        let keyword_raw = &trimmed[..split_at];
         let keyword = keyword_raw.to_ascii_lowercase();
-        let args = parts.next().unwrap_or("").trim().to_string();
+        let rest = trimmed[split_at..].trim_start();
+        let args = rest.strip_prefix('=').unwrap_or(rest).trim().to_string();
 
         if keyword == "match" {
             // Any Match line (including "Match all") opens a new conditional
@@ -116,7 +122,12 @@ const WEAK_KEX: &[&str] = &[
 ];
 
 fn list_has_weak(args: &str, weak: &[&str]) -> Vec<String> {
-    let list = args.trim_start_matches(['+', '-', '^']);
+    // A leading '-' *removes* the listed algorithms from the default set,
+    // so naming a weak one there is the fix, not the problem.
+    if args.trim_start().starts_with('-') {
+        return Vec::new();
+    }
+    let list = args.trim_start_matches(['+', '^']);
     list.split(',')
         .map(str::trim)
         .filter(|a| weak.iter().any(|w| w.eq_ignore_ascii_case(a)))
@@ -128,7 +139,7 @@ fn list_has_weak(args: &str, weak: &[&str]) -> Vec<String> {
 /// `in_match` directives are intentionally excluded from all global checks.
 ///
 /// # Errors
-/// Returns an error if `content` cannot be parsed (see [`parse`]).
+/// Returns an error if `content` cannot be parsed (e.g. an unterminated quote).
 #[allow(clippy::too_many_lines)]
 pub fn audit(file: &str, content: &str) -> Result<Vec<Finding>, String> {
     let directives = parse(content)?;
@@ -660,5 +671,39 @@ mod tests {
         for pair in f.windows(2) {
             assert!(pair[0].severity >= pair[1].severity);
         }
+    }
+
+    #[test]
+    fn keyword_equals_value_syntax_is_understood() {
+        // Regression (false negative): `PermitRootLogin=yes` was not parsed.
+        for line in [
+            "PermitRootLogin=yes",
+            "PermitRootLogin = yes",
+            "PermitRootLogin= yes",
+        ] {
+            let f = audit("sshd_config", line).unwrap();
+            let root = f.iter().find(|x| x.rule_id == "SSHD001").expect(line);
+            assert_eq!(root.severity, Severity::Critical, "{line}");
+        }
+    }
+
+    #[test]
+    fn removing_weak_algorithms_is_not_flagged() {
+        // Regression (false positive): '-' removes algorithms from the default.
+        let f = audit("sshd_config", "Ciphers -aes128-cbc,3des-cbc\nMACs -hmac-md5\nKexAlgorithms -diffie-hellman-group1-sha1").unwrap();
+        assert!(
+            !has(&f, "SSHD006") && !has(&f, "SSHD007") && !has(&f, "SSHD008"),
+            "{f:?}"
+        );
+        let f = audit("sshd_config", "Ciphers +aes128-cbc").unwrap();
+        assert!(has(&f, "SSHD006"));
+    }
+
+    #[test]
+    fn first_occurrence_wins_like_sshd() {
+        let f = audit("sshd_config", "PermitRootLogin no\nPermitRootLogin yes").unwrap();
+        assert!(!has(&f, "SSHD001"), "{f:?}");
+        let f = audit("sshd_config", "PermitRootLogin yes\nPermitRootLogin no").unwrap();
+        assert!(has(&f, "SSHD001"));
     }
 }

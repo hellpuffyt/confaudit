@@ -360,16 +360,22 @@ fn check_directive(file: &str, d: &Directive, findings: &mut Vec<Finding>) {
 
 #[allow(clippy::too_many_lines)]
 fn check_block(file: &str, block: &Block, mut ctx: Ctx, findings: &mut Vec<Finding>) {
+    // nginx inherits `add_header` from the enclosing level only when the
+    // current level has no `add_header` of its own; one local `add_header`
+    // discards *every* inherited header. Model that, rather than a union.
+    let parent_headers = ctx.headers.clone();
+    let own = own_header_names(block);
+    if !own.is_empty() {
+        ctx.headers = own;
+    }
+    if block.name == "location" {
+        report_dropped_headers(file, block, &parent_headers, &ctx.headers, findings);
+    }
     for d in own_directives(block) {
         // Note: check_directive() is deliberately not called here — walk()
         // calls it once for every directive (including these) when it
         // recurses into block.children below. Calling it here too would
         // double-report autoindex/server_tokens/client_max_body_size.
-        if d.keyword == "add_header" {
-            if let Some(name) = header_name_of(&d.args) {
-                ctx.headers.insert(name);
-            }
-        }
         if d.keyword == "proxy_set_header"
             && d.args
                 .split_whitespace()
@@ -443,14 +449,18 @@ fn check_block(file: &str, block: &Block, mut ctx: Ctx, findings: &mut Vec<Findi
         if let Some(alias) = find_own(block, "alias") {
             let loc_path = block.args.trim();
             let alias_val = alias.args.trim();
-            if !loc_path.ends_with('/') && !alias_val.ends_with('/') && !loc_path.contains('~') {
+            // The exploitable "off-by-slash" case: the location prefix has no
+            // trailing slash but the alias does, so `/files../x` maps to
+            // `/data/files/../x`. (Both without a slash maps to a sibling
+            // path `files..`, which is not a traversal.)
+            if !loc_path.ends_with('/') && alias_val.ends_with('/') && !loc_path.contains('~') {
                 findings.push(mk(
                     "NGX012",
                     Severity::High,
                     file,
                     alias.line,
                     &alias.raw,
-                    "Without a trailing slash on both the location prefix and the alias target, nginx's prefix matching lets a crafted path (e.g. appending '../') escape the intended directory and read files elsewhere on disk.",
+                    "The location prefix has no trailing slash but the alias target does, so a request like '<prefix>../secret' is mapped to '<alias>/../secret' and escapes the intended directory to read files elsewhere on disk.",
                     &format!("Add a trailing slash to both, e.g. 'location {loc_path}/ {{ alias {alias_val}/; }}'."),
                 ));
             }
@@ -486,10 +496,31 @@ fn check_block(file: &str, block: &Block, mut ctx: Ctx, findings: &mut Vec<Findi
             }
         }
 
-        let mut have: BTreeSet<String> = ctx.headers.clone();
-        collect_headers(&block.children, &mut have);
+        let locations: Vec<&Block> = block
+            .children
+            .iter()
+            .filter_map(|i| match i {
+                Item::Block(b) if b.name == "location" => Some(b),
+                _ => None,
+            })
+            .collect();
+        // A header counts for the server when the server level sends it, or
+        // when every top-level location does (each request is served by one
+        // of them). A header set in just one location does not cover the rest.
+        let covered = |key: &str| {
+            ctx.headers.contains(key)
+                || (!locations.is_empty()
+                    && locations.iter().all(|l| {
+                        let own = own_header_names(l);
+                        if own.is_empty() {
+                            ctx.headers.contains(key)
+                        } else {
+                            own.contains(key)
+                        }
+                    }))
+        };
         for (key, display) in REQUIRED_HEADERS {
-            if !have.contains(*key) {
+            if !covered(key) {
                 findings.push(mk(
                     if *key == "x-content-type-options" {
                         "NGX006"
@@ -508,7 +539,7 @@ fn check_block(file: &str, block: &Block, mut ctx: Ctx, findings: &mut Vec<Findi
                 ));
             }
         }
-        if tls && !have.contains("strict-transport-security") {
+        if tls && !covered("strict-transport-security") {
             findings.push(mk(
                 "NGX008",
                 Severity::Low,
@@ -532,16 +563,48 @@ fn server_label(block: &Block) -> String {
     }
 }
 
-fn collect_headers(items: &[Item], out: &mut BTreeSet<String>) {
-    for item in items {
-        match item {
-            Item::Directive(d) if d.keyword == "add_header" => {
-                if let Some(name) = header_name_of(&d.args) {
-                    out.insert(name);
-                }
-            }
-            Item::Block(b) => collect_headers(&b.children, out),
-            Item::Directive(_) => {}
+/// Header names set by `add_header` directly in `block` (not in children).
+fn own_header_names(block: &Block) -> BTreeSet<String> {
+    own_directives(block)
+        .filter(|d| d.keyword == "add_header")
+        .filter_map(|d| header_name_of(&d.args))
+        .collect()
+}
+
+/// A location with its own `add_header` silently drops inherited security
+/// headers - the classic nginx inheritance bug. Report each one dropped.
+fn report_dropped_headers(
+    file: &str,
+    location: &Block,
+    inherited: &BTreeSet<String>,
+    effective: &BTreeSet<String>,
+    findings: &mut Vec<Finding>,
+) {
+    let watched = REQUIRED_HEADERS
+        .iter()
+        .map(|(key, display)| (*key, *display))
+        .chain(std::iter::once((
+            "strict-transport-security",
+            "Strict-Transport-Security",
+        )));
+    for (key, display) in watched {
+        if inherited.contains(key) && !effective.contains(key) {
+            let rule = match key {
+                "x-content-type-options" => "NGX006",
+                "x-frame-options" => "NGX007",
+                _ => "NGX008",
+            };
+            findings.push(mk(
+                rule,
+                Severity::Low,
+                file,
+                location.line,
+                &format!("location {}", location.args.trim()),
+                &format!(
+                    "This location has its own add_header, so nginx does not inherit {display} from the enclosing block: responses served here are sent without it."
+                ),
+                &format!("Repeat 'add_header {display} ...;' inside this location (or move all add_header directives to one level)."),
+            ));
         }
     }
 }
@@ -814,7 +877,9 @@ server {
 
     #[test]
     fn alias_without_trailing_slash_flagged() {
-        let cfg = "server { location /files { alias /data/files; } }";
+        // Expectation changed in the audit: the exploitable form is a
+        // prefix without a trailing slash and an alias with one.
+        let cfg = "server { location /files { alias /data/files/; } }";
         let f = audit("nginx.conf", cfg).unwrap();
         assert!(has(&f, "NGX012"));
     }
@@ -887,5 +952,69 @@ server {
         let f = audit("nginx.conf", "").unwrap();
         assert!(!has(&f, "NGX001"));
         assert!(!has(&f, "NGX003"));
+    }
+
+    const SEC: &str = "add_header X-Content-Type-Options nosniff; add_header X-Frame-Options DENY;";
+
+    #[test]
+    fn a_server_level_add_header_discards_inherited_security_headers() {
+        // Regression (false negative): headers were unioned down the tree,
+        // but nginx drops ALL inherited add_header once a level has its own.
+        let cfg = format!(
+            "http {{ {SEC} server {{ listen 443 ssl; add_header Cache-Control no-store; \
+             add_header Strict-Transport-Security max-age=63072000; }} }}"
+        );
+        let f = audit("nginx.conf", &cfg).unwrap();
+        assert!(has(&f, "NGX006") && has(&f, "NGX007"), "{f:?}");
+    }
+
+    #[test]
+    fn a_location_with_its_own_add_header_reports_what_it_drops() {
+        let cfg = format!(
+            "server {{ listen 80; return 301 https://$host$request_uri; {SEC} \
+             location /a {{ add_header Cache-Control no-store; }} location /b {{ }} }}"
+        );
+        let f = audit("nginx.conf", &cfg).unwrap();
+        let dropped: Vec<_> = f.iter().filter(|x| x.evidence == "location /a").collect();
+        assert_eq!(dropped.len(), 2, "{f:?}");
+        assert!(!f.iter().any(|x| x.evidence == "location /b"), "{f:?}");
+    }
+
+    #[test]
+    fn a_header_set_in_only_one_location_does_not_cover_the_server() {
+        // Regression (false negative): headers were collected from every
+        // nested block, so one location covered the whole server.
+        let cfg = format!(
+            "server {{ listen 80; return 301 https://$host$request_uri; \
+             location /a {{ {SEC} }} location /b {{ }} }}"
+        );
+        let f = audit("nginx.conf", &cfg).unwrap();
+        assert!(has(&f, "NGX006") && has(&f, "NGX007"), "{f:?}");
+    }
+
+    #[test]
+    fn headers_set_in_every_location_cover_the_server() {
+        let cfg = format!(
+            "server {{ listen 80; return 301 https://$host$request_uri; \
+             location /a {{ {SEC} }} location / {{ {SEC} }} }}"
+        );
+        let f = audit("nginx.conf", &cfg).unwrap();
+        assert!(!has(&f, "NGX006") && !has(&f, "NGX007"), "{f:?}");
+    }
+
+    #[test]
+    fn alias_off_by_slash_is_flagged_and_matching_forms_are_not() {
+        let flagged = audit(
+            "nginx.conf",
+            "server { location /static { alias /var/www/static/; } }",
+        )
+        .unwrap();
+        assert!(has(&flagged, "NGX012"));
+        let sibling_only = audit(
+            "nginx.conf",
+            "server { location /static { alias /var/www/static; } }",
+        )
+        .unwrap();
+        assert!(!has(&sibling_only, "NGX012"));
     }
 }
