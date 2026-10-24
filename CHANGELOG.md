@@ -18,6 +18,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - nginx NGX012 flagged the harmless form (`location /x { alias /d/x; }`)
   and missed the exploitable off-by-slash form
   (`location /x { alias /d/x/; }`).
+- nginx NGX012's suggested fix doubled the alias's trailing slash
+  (`alias /var/www/static//;`); it now reads `alias /var/www/static/;`.
 - sshd: `Keyword=value` syntax was not parsed (`PermitRootLogin=yes` was
   reported as "unset", medium instead of critical); `Ciphers`/`MACs`/
   `KexAlgorithms` lists starting with `-` (removing algorithms) were
