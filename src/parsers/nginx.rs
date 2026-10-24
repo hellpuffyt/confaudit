@@ -461,7 +461,7 @@ fn check_block(file: &str, block: &Block, mut ctx: Ctx, findings: &mut Vec<Findi
                     alias.line,
                     &alias.raw,
                     "The location prefix has no trailing slash but the alias target does, so a request like '<prefix>../secret' is mapped to '<alias>/../secret' and escapes the intended directory to read files elsewhere on disk.",
-                    &format!("Add a trailing slash to both, e.g. 'location {loc_path}/ {{ alias {alias_val}/; }}'."),
+                    &format!("Add a trailing slash to both, e.g. 'location {loc_path}/ {{ alias {alias_val}; }}'."),
                 ));
             }
         }
@@ -882,6 +882,14 @@ server {
         let cfg = "server { location /files { alias /data/files/; } }";
         let f = audit("nginx.conf", cfg).unwrap();
         assert!(has(&f, "NGX012"));
+        // The suggested fix must be valid as written: the alias already ends
+        // in '/', so it must not be doubled.
+        let fix = &f.iter().find(|x| x.rule_id == "NGX012").unwrap().fix;
+        assert!(
+            fix.contains("location /files/ { alias /data/files/; }"),
+            "{fix}"
+        );
+        assert!(!fix.contains("//"), "{fix}");
     }
 
     #[test]
