@@ -17,7 +17,10 @@ pub enum FileKind {
 #[must_use]
 pub fn detect(path: &Path) -> Option<FileKind> {
     let name = path.file_name()?.to_string_lossy().to_ascii_lowercase();
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let ext = path
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
 
     if name.contains("sshd_config") {
         return Some(FileKind::Sshd);

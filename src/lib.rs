@@ -115,6 +115,22 @@ mod tests {
     }
 
     #[test]
+    fn detect_nginx_conf_with_uppercase_extension() {
+        for name in [
+            "site.CONF",
+            "site.Conf",
+            "nginx.CONF",
+            "/etc/nginx/conf.d/App.CONF",
+        ] {
+            assert_eq!(
+                FileKind::detect_or_err(&PathBuf::from(name)).unwrap(),
+                FileKind::Nginx,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
     fn detect_unknown_errors() {
         assert!(FileKind::detect_or_err(&PathBuf::from("readme.txt")).is_err());
     }
