@@ -4,8 +4,6 @@ A CLI that audits `sshd_config`, nginx and `Dockerfile` files for settings
 that weaken security, and says for each finding what an attacker gains or
 what breaks.
 
-<img src="docs/assets/overview.svg" width="100%" alt="confaudit pipeline: each path is classified by parsers::detect from its file name, parsed by the sshd, dockerfile or nginx parser into a typed structure, checked by 14, 10 and 12 rules respectively, collected as Finding values, filtered by severity and ignore list, and printed as text, JSON or SARIF with exit code 0, 1 or 2.">
-
 `confaudit` reads the files you name and checks them against 36 rules for
 well-known configuration mistakes: `PermitRootLogin yes`, directory
 listings left on, a Dockerfile that never drops root, TLS 1.0 still
@@ -13,6 +11,38 @@ accepted, and so on. It checks security posture, not syntax.
 
 Status: version 0.1.0. It is not published on crates.io, so install it
 from source. CI builds and tests it on Linux, macOS and Windows.
+
+## Demo
+
+<img src="docs/screenshots/confaudit-nginx-inheritance-trap.png" width="100%" alt="Terminal capture: cat of testdata/corpus/inheritance_trap.conf, then confaudit reporting NGX012 high at line 16 and NGX006 and NGX007 low at line 8, summary 3 findings, exit status 1.">
+
+Real terminal capture of the release binary on one of the corpus fixtures.
+The nginx file sets `X-Content-Type-Options` and `X-Frame-Options` at `http`
+level, but the TLS `server` has its own `add_header`, so nginx inherits
+neither. confaudit reports both dropped headers plus the off-by-slash
+`alias`:
+
+```
+$ confaudit testdata/corpus/inheritance_trap.conf
+[high] NGX012 (nginx) - testdata/corpus/inheritance_trap.conf:16
+  found:      alias /var/www/static/
+  consequence: The location prefix has no trailing slash but the alias target does, so a request like '<prefix>../secret' is mapped to '<alias>/../secret' and escapes the intended directory to read files elsewhere on disk.
+  fix:        Add a trailing slash to both, e.g. 'location /static/ { alias /var/www/static/; }'.
+
+[low] NGX006 (nginx) - testdata/corpus/inheritance_trap.conf:8
+  found:      server
+  consequence: Without 'nosniff', browsers may MIME-sniff a response into an executable context (e.g. treating an uploaded file as HTML/JS), enabling stored XSS from user-supplied content.
+  fix:        Add 'add_header X-Content-Type-Options nosniff;' (at http, server, or this location level).
+
+[low] NGX007 (nginx) - testdata/corpus/inheritance_trap.conf:8
+  found:      server
+  consequence: Without this header, the response can be framed by another site, enabling clickjacking attacks that trick users into acting on this site unknowingly.
+  fix:        Add 'add_header X-Frame-Options DENY;' (at http, server, or this location level).
+
+Summary: 3 finding(s) - critical=0 high=1 medium=0 low=2 info=0
+$ echo $?
+1
+```
 
 ## Why
 
@@ -66,6 +96,10 @@ this order; the first match wins:
 Any other file is reported as unrecognized and the run exits with status 2.
 
 ## Architecture
+
+<img src="docs/assets/overview.svg" width="100%" alt="Diagram of the confaudit pipeline: each path is classified by parsers::detect from its file name, parsed by the sshd, dockerfile or nginx parser into a typed structure, checked by 14, 10 and 12 rules respectively, collected as Finding values, filtered by severity and ignore list, and printed as text, JSON or SARIF with exit code 0, 1 or 2.">
+
+*Diagram: how a path flows through detection, parsing, rules, filtering and output.*
 
 ```
 src/
