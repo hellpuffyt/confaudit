@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- File-type detection was documented as case-insensitive, but only the file
+  name was lower-cased, not the extension, so `site.CONF` was reported as an
+  unrecognized config file (exit 2) instead of being audited as nginx. The
+  extension is now compared case-insensitively too.
 - nginx: `add_header` inheritance was modelled as a union. nginx drops
   *all* inherited `add_header` directives from a level that has any of
   its own, so a server with only an HSTS `add_header` sent neither
