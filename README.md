@@ -1,36 +1,36 @@
 # confaudit
 
-Audit nginx, sshd, and Docker configuration files for settings that weaken
-security — and for every finding, say exactly what an attacker gains or
+A CLI that audits `sshd_config`, nginx and `Dockerfile` files for settings
+that weaken security, and says for each finding what an attacker gains or
 what breaks.
 
-## What
+<img src="docs/assets/overview.svg" width="100%" alt="confaudit pipeline: each path is classified by parsers::detect from its file name, parsed by the sshd, dockerfile or nginx parser into a typed structure, checked by 14, 10 and 12 rules respectively, collected as Finding values, filtered by severity and ignore list, and printed as text, JSON or SARIF with exit code 0, 1 or 2.">
 
-`confaudit` reads `sshd_config`, nginx configuration files, and
-`Dockerfile`s from disk and checks them against a rule set built from
+`confaudit` reads the files you name and checks them against 36 rules for
 well-known configuration mistakes: `PermitRootLogin yes`, directory
 listings left on, a Dockerfile that never drops root, TLS 1.0 still
-accepted, and dozens more. It is a static analyzer for **security
-posture**, not a syntax linter.
+accepted, and so on. It checks security posture, not syntax.
+
+Status: version 0.1.0. It is not published on crates.io, so install it
+from source. CI builds and tests it on Linux, macOS and Windows.
 
 ## Why
 
 Server configs get copied from a blog post once and never revisited.
-`PermitRootLogin yes` survives for years because nothing ever flags it.
-An nginx `location` block silently serves directory listings. A
-Dockerfile runs as root and bakes a secret into a layer that `docker
-history` will happily show anyone with pull access. Syntax linters won't
-catch any of this — they check that the file parses, not that it's safe.
-`confaudit` checks the second thing, and every finding names the
-consequence, which is what actually gets a misconfiguration fixed.
+`PermitRootLogin yes` survives for years because nothing flags it.
+An nginx `location` block serves directory listings. A Dockerfile runs as
+root and bakes a secret into a layer that `docker history` shows to anyone
+with pull access. Syntax linters check that the file parses, not that it is
+safe. Each confaudit finding names the consequence and the fix, because
+that is what gets a misconfiguration changed.
 
 `confaudit` never makes a network request. It reads files on disk. If
 you want to audit the HTTP response headers a live server actually
-sends, that's a different (and complementary) kind of tool.
+sends, use a different kind of tool.
 
 ## Features
 
-- Three real, hand-written parsers — not one big regex sweep:
+- Three hand-written parsers rather than regexes over the raw text:
   - `sshd_config`, with correct `Match`-block scoping (a directive inside
     a `Match` block is conditional and is never reported as a global
     setting), first-value-wins semantics, and both `Keyword value` and
@@ -38,14 +38,14 @@ sends, that's a different (and complementary) kind of tool.
   - nginx, with a full block tree and directive **inheritance**
     (`http` -> `server` -> `location`) modelled the way nginx does it: a
     header set once at `http` level is recognized on every `server`
-    beneath it — *unless* that `server` (or a `location`) has any
+    beneath it, *unless* that `server` (or a `location`) has any
     `add_header` of its own, in which case nginx inherits none of them and
     confaudit reports the headers that are dropped.
   - `Dockerfile`, with backslash line-continuation joining and comment
     handling.
-- 36 rules across the three formats (see the reference table below).
-- Text, JSON, and [SARIF 2.1.0](https://sarifweb.azurewebsites.net/)
-  output — SARIF uploads straight into GitHub code scanning.
+- 36 rules across the three formats (see the reference tables below).
+- Text, JSON and [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html)
+  output. The SARIF file can be uploaded to GitHub code scanning.
 - `--severity` threshold filtering and `--ignore` rule suppression.
 - Non-zero exit status when findings meet or exceed the severity
   threshold, so it's usable as a CI gate.
@@ -54,17 +54,22 @@ sends, that's a different (and complementary) kind of tool.
 
 ## Supported formats
 
-| Format       | File detection                                              |
-| ------------ | ------------------------------------------------------------ |
-| `sshd_config`| filename `sshd_config` or `sshd_config.*`                    |
-| nginx        | `*.conf`, or a filename containing `nginx`                   |
-| Dockerfile   | filename `Dockerfile`, `Dockerfile.*`, or `*.dockerfile`     |
+The format is chosen from the file name (case-insensitive), checked in
+this order; the first match wins:
+
+| Order | Format        | File name                                                   |
+| ----- | ------------- | ----------------------------------------------------------- |
+| 1     | `sshd_config` | contains `sshd_config` (e.g. `sshd_config`, `bad_sshd_config`) |
+| 2     | Dockerfile    | contains `dockerfile` (e.g. `Dockerfile`, `Dockerfile.prod`, `app.dockerfile`) |
+| 3     | nginx         | ends in `.conf`, or contains `nginx`                        |
+
+Any other file is reported as unrecognized and the run exits with status 2.
 
 ## Architecture
 
 ```
 src/
-  finding.rs        Finding/Severity/SourceKind — the shared result type
+  finding.rs        Finding/Severity/SourceKind: the shared result type
   parsers/
     sshd.rs          sshd_config tokenizer + Match-scope tracking + rules
     nginx.rs         nginx block-tree parser + inheritance-aware rules
@@ -77,12 +82,14 @@ src/
 ```
 
 Each parser produces a small typed tree (or, for sshd, a flat list of
-directives tagged with their `Match` scope) before any rule runs — rules
+directives tagged with their `Match` scope) before any rule runs. Rules
 never regex the raw file text. This is what makes the two hard cases
 (conditional `Match` directives, inherited nginx headers) tractable and
 testable.
 
 ## Installation
+
+Requires Rust 1.74 or newer (the MSRV that CI builds and tests).
 
 ```
 git clone https://github.com/hellpuffyt/confaudit.git
@@ -100,23 +107,27 @@ cargo build --release
 ## Usage
 
 ```
-confaudit [OPTIONS] <PATH>...
+$ confaudit --help
+Audit nginx, sshd and Docker configuration files for settings that weaken security
+
+Usage: confaudit [OPTIONS] <PATHS>...
 
 Arguments:
-  <PATH>...  Configuration file(s) to audit (sshd_config, nginx *.conf, Dockerfile)
+  <PATHS>...  Configuration file(s) to audit (`sshd_config`, nginx *.conf, `Dockerfile`)
 
 Options:
   -f, --format <FORMAT>      Output format: text, json, or sarif [default: text]
-      --severity <SEVERITY>  Only report findings at or above this severity:
-                              info, low, medium, high, critical [default: info]
-      --ignore <IDS>         Comma-separated rule IDs to suppress (e.g. SSHD001,NGX002)
-      --no-fail               Exit 0 even if findings were reported
-  -h, --help                  Print help
-  -V, --version                Print version
+      --severity <SEVERITY>  Only report findings at or above this severity: info, low, medium, high, critical [default: info]
+      --ignore <IGNORE>      Comma-separated rule IDs to suppress (e.g. `SSHD001,NGX002`)
+      --no-fail              Exit with status 0 even if findings were reported
+  -h, --help                 Print help
+  -V, --version              Print version
 ```
 
-Exit codes: `0` no findings at/above threshold, `1` findings reported,
-`2` a file could not be read/parsed/audited.
+Exit codes: `0` no findings at or above the threshold, `1` findings
+reported, `2` a file could not be read, recognized or parsed, or a
+`--format`/`--severity` value was invalid. With several paths, the other
+files are still audited and reported before the run exits with `2`.
 
 ## Rules reference
 
@@ -189,12 +200,36 @@ $ confaudit --format sarif testdata/nginx/bad.conf > results.sarif
 
 ```
 $ confaudit --severity high --ignore DOCK008 testdata/docker/Dockerfile.bad
+[critical] DOCK004 (dockerfile) - testdata/docker/Dockerfile.bad:5
+  found:      ARG API_TOKEN=fake-build-time-token-do-not-use
+...
+Summary: 4 finding(s) - critical=2 high=2 medium=0 low=0 info=0
+```
+
+All three commands exit with status `1` because findings were reported.
+
+JSON output is an object with a `findings` array and a `summary` of counts
+per severity. A clean file gives:
+
+```
+$ confaudit -f json testdata/docker/Dockerfile.good
+{
+  "findings": [],
+  "summary": {
+    "total": 0,
+    "critical": 0,
+    "high": 0,
+    "medium": 0,
+    "low": 0,
+    "info": 0
+  }
+}
 ```
 
 ## Testing
 
 ```
-cargo test --all-targets
+cargo test --all-targets      # 154 tests: 141 unit, 13 CLI
 ```
 
 The suite covers every rule in both directions (triggers and does-not-
@@ -233,9 +268,13 @@ Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
 `confaudit` only reads files you point it at; it makes no network
 requests and executes nothing from the files it audits. The fixtures in
 `testdata/` use obviously fake secret values (e.g.
-`fake-build-time-token-do-not-use`) — they exist to exercise the secret-
+`fake-build-time-token-do-not-use`); they exist to exercise the secret-
 detection rule, not as real credentials.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
