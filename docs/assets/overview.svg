@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420" role="img" aria-labelledby="t d">
+  <title id="t">confaudit pipeline</title>
+  <desc id="d">Each path given to the CLI is classified by parsers::detect from its file name. sshd_config files go to the sshd parser, which tags directives with their Match scope and runs 14 rules. Dockerfiles go to the dockerfile parser, which joins line continuations and runs 10 rules. Other .conf or nginx files go to the nginx parser, which builds a block tree with http, server and location inheritance and runs 12 rules. Every rule produces Finding values carrying rule id, severity, file, line, evidence, consequence and fix. filter_findings applies the severity threshold and the ignore list, then text, JSON or SARIF output is printed and the exit code is 0, 1 or 2.</desc>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#A3AAA6"/>
+    </marker>
+  </defs>
+  <rect width="1200" height="420" fill="#0C0D0D"/>
+
+  <g font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" font-size="11" fill="#A3AAA6" letter-spacing="2">
+    <text x="40" y="38">CLASSIFY</text>
+    <text x="300" y="38">PARSE TO A TYPED TREE, THEN RUN RULES</text>
+    <text x="790" y="38">REPORT</text>
+  </g>
+
+  <g font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace">
+    <rect x="40" y="56" width="210" height="80" rx="6" fill="#17191A" stroke="#2A2E2D"/>
+    <text x="56" y="80" font-size="14" fill="#EEEAE2">confaudit PATH...</text>
+    <text x="56" y="100" font-size="11" fill="#A3AAA6">reads files only;</text>
+    <text x="56" y="116" font-size="11" fill="#A3AAA6">no network, no exec</text>
+
+    <rect x="40" y="166" width="210" height="150" rx="6" fill="#17191A" stroke="#2A2E2D"/>
+    <text x="56" y="190" font-size="14" fill="#EEEAE2">parsers::detect</text>
+    <text x="56" y="210" font-size="11" fill="#A3AAA6">by file name, lowercased,</text>
+    <text x="56" y="226" font-size="11" fill="#A3AAA6">first match wins:</text>
+    <text x="56" y="250" font-size="11" fill="#EEEAE2">1 *sshd_config*</text>
+    <text x="56" y="268" font-size="11" fill="#EEEAE2">2 *dockerfile*</text>
+    <text x="56" y="286" font-size="11" fill="#EEEAE2">3 *.conf, *nginx*</text>
+    <text x="56" y="306" font-size="11" fill="#A3AAA6">else: error, exit 2</text>
+
+    <!-- parsers -->
+    <rect x="300" y="56" width="440" height="96" rx="6" fill="#17191A" stroke="#2A2E2D"/>
+    <text x="316" y="80" font-size="14" fill="#EEEAE2">parsers/sshd.rs</text>
+    <text x="620" y="80" font-size="12" fill="#3FBF8A">SSHD001-014</text>
+    <text x="316" y="102" font-size="11" fill="#A3AAA6">flat Directive list, each tagged with its Match scope</text>
+    <text x="316" y="118" font-size="11" fill="#A3AAA6">first value wins · Keyword value / Keyword=value</text>
+    <text x="316" y="134" font-size="11" fill="#A3AAA6">directives inside Match are never global findings</text>
+
+    <rect x="300" y="166" width="440" height="96" rx="6" fill="#17191A" stroke="#2A2E2D"/>
+    <text x="316" y="190" font-size="14" fill="#EEEAE2">parsers/dockerfile.rs</text>
+    <text x="620" y="190" font-size="12" fill="#3FBF8A">DOCK001-010</text>
+    <text x="316" y="212" font-size="11" fill="#A3AAA6">Instruction list; backslash continuations joined,</text>
+    <text x="316" y="228" font-size="11" fill="#A3AAA6">comments dropped, start line of each recorded</text>
+    <text x="316" y="244" font-size="11" fill="#A3AAA6">USER judged on the final build stage</text>
+
+    <rect x="300" y="276" width="440" height="110" rx="6" fill="#17191A" stroke="#2A2E2D"/>
+    <text x="316" y="300" font-size="14" fill="#EEEAE2">parsers/nginx.rs</text>
+    <text x="620" y="300" font-size="12" fill="#3FBF8A">NGX001-012</text>
+    <text x="316" y="322" font-size="11" fill="#A3AAA6">Block / Directive tree: http → server → location</text>
+    <text x="316" y="338" font-size="11" fill="#A3AAA6">add_header inherited only if the child sets none;</text>
+    <text x="316" y="354" font-size="11" fill="#A3AAA6">headers dropped by a local add_header are reported</text>
+    <text x="316" y="370" font-size="11" fill="#A3AAA6">unbalanced braces / quotes → Err, not a panic</text>
+
+    <!-- finding -->
+    <rect x="790" y="56" width="370" height="96" rx="6" fill="#17191A" stroke="#3FBF8A"/>
+    <text x="806" y="80" font-size="14" fill="#EEEAE2">Vec&lt;Finding&gt;</text>
+    <text x="806" y="102" font-size="11" fill="#A3AAA6">rule_id · severity · source · file · line</text>
+    <text x="806" y="118" font-size="11" fill="#A3AAA6">evidence · consequence · fix</text>
+    <text x="806" y="134" font-size="11" fill="#A3AAA6">Severity: info &lt; low &lt; medium &lt; high &lt; critical</text>
+
+    <rect x="790" y="166" width="370" height="64" rx="6" fill="#17191A" stroke="#2A2E2D"/>
+    <text x="806" y="190" font-size="14" fill="#EEEAE2">filter_findings</text>
+    <text x="806" y="212" font-size="11" fill="#A3AAA6">--severity threshold · --ignore IDS</text>
+
+    <rect x="790" y="244" width="114" height="54" rx="6" fill="#17191A" stroke="#2A2E2D"/>
+    <text x="806" y="268" font-size="12" fill="#EEEAE2">text</text>
+    <text x="806" y="286" font-size="11" fill="#A3AAA6">default</text>
+    <rect x="918" y="244" width="114" height="54" rx="6" fill="#17191A" stroke="#2A2E2D"/>
+    <text x="934" y="268" font-size="12" fill="#EEEAE2">json</text>
+    <text x="934" y="286" font-size="11" fill="#A3AAA6">-f json</text>
+    <rect x="1046" y="244" width="114" height="54" rx="6" fill="#17191A" stroke="#2A2E2D"/>
+    <text x="1062" y="268" font-size="12" fill="#EEEAE2">sarif</text>
+    <text x="1062" y="286" font-size="11" fill="#A3AAA6">SARIF 2.1.0</text>
+
+    <rect x="790" y="314" width="370" height="72" rx="6" fill="none" stroke="#2A2E2D" stroke-dasharray="4 3"/>
+    <text x="806" y="338" font-size="12" fill="#EEEAE2">exit code</text>
+    <text x="806" y="358" font-size="11" fill="#A3AAA6">0 clean · 1 findings (unless --no-fail)</text>
+    <text x="806" y="374" font-size="11" fill="#A3AAA6">2 unreadable / unknown / unparsable file</text>
+  </g>
+
+  <g stroke="#A3AAA6" stroke-width="1.4" fill="none">
+    <line x1="145" y1="136" x2="145" y2="164" marker-end="url(#a)"/>
+    <path d="M250 240 L274 240 L274 104 L298 104" marker-end="url(#a)"/>
+    <path d="M274 214 L298 214" marker-end="url(#a)"/>
+    <path d="M274 240 L274 330 L298 330" marker-end="url(#a)"/>
+    <path d="M740 104 L764 104 L764 330 L740 330"/>
+    <path d="M740 214 L764 214"/>
+    <path d="M764 104 L788 104" marker-end="url(#a)"/>
+    <line x1="975" y1="152" x2="975" y2="164" marker-end="url(#a)"/>
+    <line x1="975" y1="230" x2="975" y2="242" marker-end="url(#a)"/>
+    <line x1="975" y1="298" x2="975" y2="312" marker-end="url(#a)"/>
+  </g>
+</svg>
